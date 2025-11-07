@@ -1,4 +1,3 @@
-
 # SPDX-License-Identifier: MIT
 # -*- coding: utf-8 -*-
 # UWorld IDs → tags → cards (minimal UI, whole collection, progress indicator, open-in-browser + auto-close)
@@ -74,7 +73,12 @@ def make_mono_font() -> QFont:
 VERSION_LABELS = ["V12", "V11"]
 VERSION_VALUE: Dict[str, str] = {"V12": "AK_Step1_v12", "V11": "AK_Step1_v11"}
 DEFAULT_VERSION_LABEL = "V12"
-UWORLD_SEGMENT = "::#UWorld::Step::"
+
+# Sintaxes:
+# V12 → '#AK_Step1_v12::#UWorld::Step::<ID>'
+# V11 → '#AK_Step1_v11::#UWorld::<ID>'
+UWORLD_SEGMENT_V12 = "::#UWorld::Step::"
+UWORLD_SEGMENT_V11 = "::#UWorld::"
 
 def _platform_default_shortcut() -> str:
     return "Meta+Alt+U" if sys.platform == "darwin" else "Ctrl+Alt+U"
@@ -121,21 +125,19 @@ def _extract_unique_int_strings(raw: str) -> List[str]:
 def _esc(s: str) -> str:
     return s.replace('"', r'\"')
 
-# --- NOVO: prefixo de tag com a regra pedida ---
 def _tag_prefix(deck_version_value: str) -> str:
     """
-    Regra especial:
-    - Se a versão escolhida for V11, a sintaxe deve usar '#AK_Step1_v12::#UWorld::<ID>'
-      (ou seja, força o prefixo de V12 e remove 'Step::').
-    - Caso contrário (V12), mantém o padrão '#AK_Step1_v12::#UWorld::Step::<ID>'.
+    V11 → '#AK_Step1_v11::#UWorld::'
+    V12 → '#AK_Step1_v12::#UWorld::Step::'
     """
+    base = _normalize_version_prefix(deck_version_value)  # '#AK_Step1_v11' ou '#AK_Step1_v12'
     if deck_version_value == VERSION_VALUE["V11"]:
-        base = _normalize_version_prefix(VERSION_VALUE["V12"])
-        return base + "::#UWorld::"
-    return _normalize_version_prefix(deck_version_value) + UWORLD_SEGMENT
+        return base + UWORLD_SEGMENT_V11
+    return base + UWORLD_SEGMENT_V12
 
 def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
     prefix = _tag_prefix(deck_version_value)
+    ids = [i.strip() for i in ids if i and i.strip()]
     if not ids:
         return ""
     parts = [f'tag:"{_esc(prefix + i)}"' for i in ids]
@@ -316,11 +318,9 @@ class UWorldIdsDialog(QDialog):
         # status → Searching…
         self._set_busy(True)
 
-        # aceita assinatura com progress param (compat futura)
         def work(_progress=None):
             return compute_ids_summary(deck_version_value, ids_questions)
 
-        # Anki 25.x: callback recebe um Future
         def on_done(fut):
             try:
                 summary = fut.result()
@@ -340,7 +340,6 @@ class UWorldIdsDialog(QDialog):
                 self.outSummary.setPlainText("\n".join(lines))
                 tooltip("Query finished.", parent=self)
             finally:
-                # status → Done ✓
                 self._set_busy(False)
 
         mw.taskman.run_in_background(work, on_done)
@@ -379,7 +378,6 @@ class UWorldIdsDialog(QDialog):
                 showInfo(f"Could not run search in Browser:\n{e}")
                 return
 
-        # Dar foco ao Browser
         try:
             brw.activateWindow()
             brw.raise_()
@@ -387,7 +385,6 @@ class UWorldIdsDialog(QDialog):
             pass
 
         tooltip("Opened in Browser.", parent=self)
-        # ✅ Fecha o diálogo do add-on após abrir o Browser e executar a busca
         self.accept()
 
 # -----------------------------
