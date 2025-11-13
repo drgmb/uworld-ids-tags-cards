@@ -92,4 +92,4 @@ Please open an issue including:
 
 ## 📝 License
 
-AGPL-3.0 (or a license of your choice).
+MIT.
