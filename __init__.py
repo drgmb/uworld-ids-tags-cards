@@ -47,13 +47,17 @@ def QtAlign_Left():
 
 def make_mono_font() -> QFont:
     f = QFont()
-    families = ["Menlo", "Consolas", "Monaco", "Courier New", "Noto Sans Mono", "DejaVu Sans Mono", "monospace"]
+    families = [
+        "Menlo", "Consolas", "Monaco", "Courier New",
+        "Noto Sans Mono", "DejaVu Sans Mono", "monospace"
+    ]
     try:
         f.setFamilies(families)  # Qt ≥5.13/Qt6
     except Exception:
         for fam in families:
             try:
-                f.setFamily(fam); break
+                f.setFamily(fam)
+                break
             except Exception:
                 continue
     try:
@@ -62,7 +66,8 @@ def make_mono_font() -> QFont:
     except Exception:
         for hint_name in ("Monospace", "TypeWriter"):
             try:
-                f.setStyleHint(getattr(QFont, hint_name)); break
+                f.setStyleHint(getattr(QFont, hint_name))
+                break
             except Exception:
                 continue
     return f
@@ -76,7 +81,7 @@ DEFAULT_VERSION_LABEL = "V12"
 
 # Sintaxes:
 # V12 → '#AK_Step1_v12::#UWorld::Step::<ID>'
-# V11 → '#AK_Step1_v11::#UWorld::<ID>'
+# V11 → '#AK_Step1_v11::#UWorld::<...subtags...>::<ID>' (última subtag = ID)
 UWORLD_SEGMENT_V12 = "::#UWorld::Step::"
 UWORLD_SEGMENT_V11 = "::#UWorld::"
 
@@ -119,7 +124,8 @@ def _extract_unique_int_strings(raw: str) -> List[str]:
     seen, out = set(), []
     for x in ids:
         if x not in seen:
-            seen.add(x); out.append(x)
+            seen.add(x)
+            out.append(x)
     return out
 
 def _esc(s: str) -> str:
@@ -136,6 +142,10 @@ def _tag_prefix(deck_version_value: str) -> str:
     return base + UWORLD_SEGMENT_V12
 
 def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
+    """
+    Caminho padrão (V12): constrói query com tags exatas:
+        tag:"#AK_Step1_v12::#UWorld::Step::<ID>" OR ...
+    """
     prefix = _tag_prefix(deck_version_value)
     ids = [i.strip() for i in ids if i and i.strip()]
     if not ids:
@@ -143,30 +153,99 @@ def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
     parts = [f'tag:"{_esc(prefix + i)}"' for i in ids]
     return "(" + " OR ".join(parts) + ")"
 
+def _compute_ids_summary_v11(ids: List[str]) -> Dict[str, Any]:
+    """
+    Lógica específica para V11.
+
+    Tags têm o formato:
+      #AK_Step1_v11::#UWorld::...subtags intermediárias...::<ID>
+
+    Aqui:
+    - usamos busca por tag com wildcard:
+        tag:"#AK_Step1_v11::#UWorld::*::<ID>"
+      para cada ID, para contar cards e saber quais IDs não têm card algum.
+    - montamos também a search syntax como OR dessas expressões de tag.
+    """
+    result: Dict[str, Any] = {
+        "total_ids_input": len(ids),
+        "total_cards": 0,
+        "total_ids_without_cards": 0,
+        "ids_syntax": "",
+        "ids_without_cards": [],
+    }
+
+    if not ids:
+        return result
+
+    prefix_base = '#AK_Step1_v11::#UWorld::'
+    all_cids: Set[int] = set()
+    ids_without: List[str] = []
+
+    for id_s in ids:
+        q_tag = f'tag:"{_esc(prefix_base)}*::{_esc(id_s)}"'
+        cids = set(mw.col.find_cards(q_tag))
+        if not cids:
+            ids_without.append(id_s)
+        all_cids.update(cids)
+
+    # Search syntax baseada na TAG (não mais em cid)
+    if ids:
+        parts = [
+            f'tag:"{_esc(prefix_base)}*::{_esc(i)}"' 
+            for i in ids
+        ]
+        ids_syntax = "(" + " OR ".join(parts) + ")"
+    else:
+        ids_syntax = ""
+
+    result["total_cards"] = len(all_cids)
+    result["total_ids_without_cards"] = len(ids_without)
+    result["ids_without_cards"] = ids_without
+    result["ids_syntax"] = ids_syntax
+
+    return result
+
 def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str, Any]:
     """
     Busca em TODA a coleção (sem filtro de deck).
     Retorna:
       total_ids_input, total_cards, total_ids_without_cards,
       ids_syntax, ids_without_cards
+
+    • V12 → usa tags exatas:
+        '#AK_Step1_v12::#UWorld::Step::<ID>'
+    • V11 → sintaxe com wildcard em tag:
+        'tag:"#AK_Step1_v11::#UWorld::*::<ID>"'
+      ignorando subtags intermediárias e usando a última subtag como question ID.
     """
     ids = _extract_unique_int_strings(ids_questions)
-    ids_syntax = build_tag_or_query(ids, deck_version_value)
 
     result: Dict[str, Any] = {
         "total_ids_input": len(ids),
         "total_cards": 0,
         "total_ids_without_cards": 0,
-        "ids_syntax": ids_syntax,
+        "ids_syntax": "",
         "ids_without_cards": [],
     }
-    if not ids or not ids_syntax:
+
+    if not ids:
         return result
 
-    # Busca principal: exatamente a OR syntax (coleção inteira)
+    # ----- Caminho V11: wildcard em tag -----
+    if deck_version_value == VERSION_VALUE["V11"]:
+        return _compute_ids_summary_v11(ids)
+
+    # ----- Caminho padrão (V12) → tags exatas -----
+    ids_syntax = build_tag_or_query(ids, deck_version_value)
+    result["ids_syntax"] = ids_syntax
+
+    if not ids_syntax:
+        return result
+
+    # Busca principal: OR syntax na coleção inteira
     cids_all: Set[int] = set(mw.col.find_cards(ids_syntax))
 
-    # IDs sem cards: verificação por tag individual (coleção inteira)
+    # IDs sem cards: verificar por tag individual
     prefix = _tag_prefix(deck_version_value)
     ids_without: List[str] = []
     for id_s in ids:
@@ -178,6 +257,7 @@ def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str
     result["total_cards"] = len(cids_all)
     result["total_ids_without_cards"] = len(ids_without)
     result["ids_without_cards"] = ids_without
+
     return result
 
 # -----------------------------
@@ -201,8 +281,10 @@ class UWorldIdsDialog(QDialog):
         form.setSpacing(6)
 
         # 1) IDs primeiro (foco ao abrir)
-        self.txtIds = JText = QTextEdit()
-        self.txtIds.setPlaceholderText("Paste integer IDs separated by comma… e.g. 1,3213,342435,2312")
+        self.txtIds = QTextEdit()
+        self.txtIds.setPlaceholderText(
+            "Paste integer IDs separated by comma… e.g. 1,3213,342435,2312"
+        )
         self.txtIds.setFixedHeight(90)
         form.addRow(QLabel("ids_questions:"), self.txtIds)
 
@@ -217,7 +299,8 @@ class UWorldIdsDialog(QDialog):
         root.addLayout(form)
 
         # Botões + status/progresso
-        btn_row = QHBoxLayout(); btn_row.setSpacing(6)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
         self.btnRun = QPushButton("Run")
         self.btnCopySyntax = QPushButton('Copy “IDs (search syntax)”')
         self.btnCopySyntax.setEnabled(False)
@@ -293,7 +376,8 @@ class UWorldIdsDialog(QDialog):
             self.btnRun.setEnabled(False)
             self.btnCopySyntax.setEnabled(False)
             self.btnOpenBrowser.setEnabled(False)
-            self.lblStatus.repaint(); self.progress.repaint()
+            self.lblStatus.repaint()
+            self.progress.repaint()
             QApplication.processEvents()
         else:
             self.progress.setRange(0, 1)
@@ -315,7 +399,6 @@ class UWorldIdsDialog(QDialog):
         # persiste também ao rodar
         self._persist_version_now()
 
-        # status → Searching…
         self._set_busy(True)
 
         def work(_progress=None):
@@ -348,15 +431,17 @@ class UWorldIdsDialog(QDialog):
     def copy_syntax(self):
         syntax = self._last_summary.get("ids_syntax") or ""
         if not syntax:
-            tooltip("No search syntax to copy.", parent=self); return
+            tooltip("No search syntax to copy.", parent=self)
+            return
         QApplication.clipboard().setText(syntax)
-        tooltip('Search syntax copied to clipboard.', parent=self)
+        tooltip("Search syntax copied to clipboard.", parent=self)
 
     def open_in_browser(self):
         """Abre o Browser com a search syntax atual e fecha este diálogo ao concluir com sucesso."""
         syntax = self._last_summary.get("ids_syntax") or ""
         if not syntax:
-            tooltip("No search syntax to open.", parent=self); return
+            tooltip("No search syntax to open.", parent=self)
+            return
         try:
             brw = dialogs.open("Browser", mw)
         except Exception as e:
@@ -398,14 +483,23 @@ class ShortcutConfigDialog(QDialog):
 
         self._cfg = _get_config()
 
-        root = QVBoxLayout(self); root.setContentsMargins(12, 12, 12, 12); root.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
-        frm = QFormLayout(); frm.setLabelAlignment(QtAlign_Left()); frm.setSpacing(6)
+        frm = QFormLayout()
+        frm.setLabelAlignment(QtAlign_Left())
+        frm.setSpacing(6)
 
         self.txtShortcut = QLineEdit()
         self.txtShortcut.setPlaceholderText(_platform_default_shortcut())
-        self.txtShortcut.setText(self._cfg.get("shortcut") or _platform_default_shortcut())
-        frm.addRow(QLabel("Global shortcut (e.g., Ctrl+Alt+U / Meta+Alt+U):"), self.txtShortcut)
+        self.txtShortcut.setText(
+            self._cfg.get("shortcut") or _platform_default_shortcut()
+        )
+        frm.addRow(
+            QLabel("Global shortcut (e.g., Ctrl+Alt+U / Meta+Alt+U):"),
+            self.txtShortcut,
+        )
 
         root.addLayout(frm)
 
@@ -413,8 +507,11 @@ class ShortcutConfigDialog(QDialog):
         self.btnRestore = QPushButton("Restore default")
         self.btnSave = QPushButton("Save")
         self.btnCancel = QPushButton("Cancel")
-        btns.addWidget(self.btnRestore); btns.addStretch(1); self.btnCancel.setDefault(True)
-        btns.addWidget(self.btnCancel); btns.addWidget(self.btnSave)
+        btns.addWidget(self.btnRestore)
+        btns.addStretch(1)
+        self.btnCancel.setDefault(True)
+        btns.addWidget(self.btnCancel)
+        btns.addWidget(self.btnSave)
         root.addLayout(btns)
 
         self.btnRestore.clicked.connect(self.restore_default)
@@ -428,10 +525,16 @@ class ShortcutConfigDialog(QDialog):
     def save(self):
         new_shortcut = (self.txtShortcut.text() or "").strip() or _platform_default_shortcut()
         if QKeySequence(new_shortcut).toString() == "":
-            showInfo("Invalid shortcut. Example: Ctrl+Alt+U (Win/Linux) or Meta+Alt+U (macOS)."); return
-        cfg = _get_config(); cfg["shortcut"] = new_shortcut; _write_config(cfg)
+            showInfo(
+                "Invalid shortcut. Example: Ctrl+Alt+U (Win/Linux) or Meta+Alt+U (macOS)."
+            )
+            return
+        cfg = _get_config()
+        cfg["shortcut"] = new_shortcut
+        _write_config(cfg)
         _apply_shortcut_from_config()
-        tooltip("Settings saved.", parent=self); self.accept()
+        tooltip("Settings saved.", parent=self)
+        self.accept()
 
 # -----------------------------
 # Menu / Hook + Global Shortcut
@@ -477,7 +580,8 @@ def on_profile_open():
 
     menu_root = getattr(mw.form, "menuTools", None)
     if not menu_root:
-        showInfo("Tools menu not found."); return
+        showInfo("Tools menu not found.")
+        return
 
     _menu_action = QAction("UWorld IDs → tags → cards", mw)
     _menu_action.triggered.connect(open_dialog)
