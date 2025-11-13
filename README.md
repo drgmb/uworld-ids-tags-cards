@@ -60,7 +60,7 @@ It looks up integer IDs (e.g., `1,3213,342435`) as **tags** in the pattern
 
 **No cards found, but I’m sure I have the tags. Why?**  
 • Make sure your tags exactly follow the pattern:  
-`#AK_Step1_v12::#UWorld::Step::<ID>` (or `#AK_Step1_v11::#UWorld::Step::<ID>`).  
+`#AK_Step1_v12::#UWorld::Step::<ID>` (or `#AK_Step1_v11::#UWorld::*::<ID>`).  
 • Try copying the query via **Copy “IDs (search syntax)”** and running it in the Browser.
 
 **Can I filter by deck?**  
