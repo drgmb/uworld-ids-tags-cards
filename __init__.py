@@ -139,8 +139,16 @@ def _esc(s: str) -> str:
 
 def _tag_prefix(deck_version_value: str) -> str:
     base = _normalize_version_prefix(deck_version_value)
-    if deck_version_value.endswith("_v11"):
+
+    # Step3 V12 ainda usa tags no formato "V11-style":
+    #   #AK_Step3_v12::#UWorld::...::...::12345
+    # então precisa usar UWORLD_SEGMENT_V11.
+    if deck_version_value.endswith("_v11") or deck_version_value == "AK_Step3_v12":
         return base + UWORLD_SEGMENT_V11
+
+    # Demais casos V12 mantêm o formato novo:
+    #   #AK_Step1_v12::#UWorld::Step::12345
+    #   #AK_Step2_v12::#UWorld::Step::12345
     return base + UWORLD_SEGMENT_V12
 
 def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
@@ -205,9 +213,14 @@ def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str
     if not ids:
         return result
 
-    if deck_version_value.endswith("_v11"):
+    # Step3 V12 deve usar exatamente a mesma lógica de busca do V11,
+    # apenas trocando o prefixo para AK_Step3_v12.
+    is_v11_style = deck_version_value.endswith("_v11") or deck_version_value == "AK_Step3_v12"
+
+    if is_v11_style:
         return _compute_ids_summary_v11(deck_version_value, ids)
 
+    # V12 "puro" (Step1, Step2 já no formato novo)
     ids_syntax = build_tag_or_query(ids, deck_version_value)
     result["ids_syntax"] = ids_syntax
 
@@ -229,6 +242,7 @@ def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str
     result["ids_without_cards"] = ids_without
 
     return result
+
 
 # -----------------------------
 # UI - Main Dialog
