@@ -79,9 +79,9 @@ VERSION_LABELS = ["V12", "V11"]
 VERSION_VALUE: Dict[str, str] = {"V12": "AK_Step1_v12", "V11": "AK_Step1_v11"}
 DEFAULT_VERSION_LABEL = "V12"
 
-# Sintaxes:
-# V12 → '#AK_Step1_v12::#UWorld::Step::<ID>'
-# V11 → '#AK_Step1_v11::#UWorld::<...subtags...>::<ID>' (última subtag = ID)
+STEP_LABELS = ["Step 1", "Step 2", "Step 3"]
+DEFAULT_STEP_LABEL = "Step 1"
+
 UWORLD_SEGMENT_V12 = "::#UWorld::Step::"
 UWORLD_SEGMENT_V11 = "::#UWorld::"
 
@@ -90,15 +90,21 @@ def _platform_default_shortcut() -> str:
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "deck_version_label": DEFAULT_VERSION_LABEL,
-    "shortcut": "",  # vazio => preenchido com padrão
+    "step_label": DEFAULT_STEP_LABEL,
+    "shortcut": "",
 }
 
 def _get_config() -> Dict[str, Any]:
     cfg = mw.addonManager.getConfig(ADDON_ID) or {}
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
+
     if cfg.get("deck_version_label") not in VERSION_LABELS:
         cfg["deck_version_label"] = DEFAULT_VERSION_LABEL
+
+    if cfg.get("step_label") not in STEP_LABELS:
+        cfg["step_label"] = DEFAULT_STEP_LABEL
+
     if not cfg.get("shortcut"):
         cfg["shortcut"] = _platform_default_shortcut()
         _write_config(cfg)
@@ -132,20 +138,12 @@ def _esc(s: str) -> str:
     return s.replace('"', r'\"')
 
 def _tag_prefix(deck_version_value: str) -> str:
-    """
-    V11 → '#AK_Step1_v11::#UWorld::'
-    V12 → '#AK_Step1_v12::#UWorld::Step::'
-    """
-    base = _normalize_version_prefix(deck_version_value)  # '#AK_Step1_v11' ou '#AK_Step1_v12'
-    if deck_version_value == VERSION_VALUE["V11"]:
+    base = _normalize_version_prefix(deck_version_value)
+    if deck_version_value.endswith("_v11"):
         return base + UWORLD_SEGMENT_V11
     return base + UWORLD_SEGMENT_V12
 
 def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
-    """
-    Caminho padrão (V12): constrói query com tags exatas:
-        tag:"#AK_Step1_v12::#UWorld::Step::<ID>" OR ...
-    """
     prefix = _tag_prefix(deck_version_value)
     ids = [i.strip() for i in ids if i and i.strip()]
     if not ids:
@@ -153,19 +151,7 @@ def build_tag_or_query(ids: List[str], deck_version_value: str) -> str:
     parts = [f'tag:"{_esc(prefix + i)}"' for i in ids]
     return "(" + " OR ".join(parts) + ")"
 
-def _compute_ids_summary_v11(ids: List[str]) -> Dict[str, Any]:
-    """
-    Lógica específica para V11.
-
-    Tags têm o formato:
-      #AK_Step1_v11::#UWorld::...subtags intermediárias...::<ID>
-
-    Aqui:
-    - usamos busca por tag com wildcard:
-        tag:"#AK_Step1_v11::#UWorld::*::<ID>"
-      para cada ID, para contar cards e saber quais IDs não têm card algum.
-    - montamos também a search syntax como OR dessas expressões de tag.
-    """
+def _compute_ids_summary_v11(deck_version_value: str, ids: List[str]) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "total_ids_input": len(ids),
         "total_cards": 0,
@@ -177,7 +163,8 @@ def _compute_ids_summary_v11(ids: List[str]) -> Dict[str, Any]:
     if not ids:
         return result
 
-    prefix_base = '#AK_Step1_v11::#UWorld::'
+    prefix_base = _tag_prefix(deck_version_value)
+
     all_cids: Set[int] = set()
     ids_without: List[str] = []
 
@@ -188,10 +175,9 @@ def _compute_ids_summary_v11(ids: List[str]) -> Dict[str, Any]:
             ids_without.append(id_s)
         all_cids.update(cids)
 
-    # Search syntax baseada na TAG (não mais em cid)
     if ids:
         parts = [
-            f'tag:"{_esc(prefix_base)}*::{_esc(i)}"' 
+            f'tag:"{_esc(prefix_base)}*::{_esc(i)}"'
             for i in ids
         ]
         ids_syntax = "(" + " OR ".join(parts) + ")"
@@ -206,18 +192,6 @@ def _compute_ids_summary_v11(ids: List[str]) -> Dict[str, Any]:
     return result
 
 def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str, Any]:
-    """
-    Busca em TODA a coleção (sem filtro de deck).
-    Retorna:
-      total_ids_input, total_cards, total_ids_without_cards,
-      ids_syntax, ids_without_cards
-
-    • V12 → usa tags exatas:
-        '#AK_Step1_v12::#UWorld::Step::<ID>'
-    • V11 → sintaxe com wildcard em tag:
-        'tag:"#AK_Step1_v11::#UWorld::*::<ID>"'
-      ignorando subtags intermediárias e usando a última subtag como question ID.
-    """
     ids = _extract_unique_int_strings(ids_questions)
 
     result: Dict[str, Any] = {
@@ -231,21 +205,17 @@ def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str
     if not ids:
         return result
 
-    # ----- Caminho V11: wildcard em tag -----
-    if deck_version_value == VERSION_VALUE["V11"]:
-        return _compute_ids_summary_v11(ids)
+    if deck_version_value.endswith("_v11"):
+        return _compute_ids_summary_v11(deck_version_value, ids)
 
-    # ----- Caminho padrão (V12) → tags exatas -----
     ids_syntax = build_tag_or_query(ids, deck_version_value)
     result["ids_syntax"] = ids_syntax
 
     if not ids_syntax:
         return result
 
-    # Busca principal: OR syntax na coleção inteira
     cids_all: Set[int] = set(mw.col.find_cards(ids_syntax))
 
-    # IDs sem cards: verificar por tag individual
     prefix = _tag_prefix(deck_version_value)
     ids_without: List[str] = []
     for id_s in ids:
@@ -261,7 +231,7 @@ def compute_ids_summary(deck_version_value: str, ids_questions: str) -> Dict[str
     return result
 
 # -----------------------------
-# UI - Main Dialog (IDs first, then version) + Progress + Open Browser (auto-close)
+# UI - Main Dialog
 # -----------------------------
 class UWorldIdsDialog(QDialog):
     def __init__(self, parent=None):
@@ -280,7 +250,6 @@ class UWorldIdsDialog(QDialog):
         form.setLabelAlignment(QtAlign_Left())
         form.setSpacing(6)
 
-        # 1) IDs primeiro (foco ao abrir)
         self.txtIds = QTextEdit()
         self.txtIds.setPlaceholderText(
             "Paste integer IDs separated by comma… e.g. 1,3213,342435,2312"
@@ -288,21 +257,30 @@ class UWorldIdsDialog(QDialog):
         self.txtIds.setFixedHeight(90)
         form.addRow(QLabel("ids_questions:"), self.txtIds)
 
-        # 2) Versão (dropdown V12/V11 persistente)
         self.cmbVersion = QComboBox()
         self.cmbVersion.addItems(VERSION_LABELS)
         saved_label = self._cfg.get("deck_version_label") or DEFAULT_VERSION_LABEL
         if saved_label in VERSION_LABELS:
             self.cmbVersion.setCurrentIndex(VERSION_LABELS.index(saved_label))
-        form.addRow(QLabel("deck_version:"), self.cmbVersion)
+
+        self.cmbStep = QComboBox()
+        self.cmbStep.addItems(STEP_LABELS)
+        saved_step_label = self._cfg.get("step_label") or DEFAULT_STEP_LABEL
+        if saved_step_label in STEP_LABELS:
+            self.cmbStep.setCurrentIndex(STEP_LABELS.index(saved_step_label))
+
+        version_step_row = QHBoxLayout()
+        version_step_row.addWidget(self.cmbVersion)
+        version_step_row.addWidget(self.cmbStep)
+
+        form.addRow(QLabel("deck_version:"), version_step_row)
 
         root.addLayout(form)
 
-        # Botões + status/progresso
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         self.btnRun = QPushButton("Run")
-        self.btnCopySyntax = QPushButton('Copy “IDs (search syntax)”')
+        self.btnCopySyntax = QPushButton('Copy "IDs (search syntax)"')
         self.btnCopySyntax.setEnabled(False)
         self.btnOpenBrowser = QPushButton("Open in Browser")
         self.btnOpenBrowser.setEnabled(False)
@@ -324,7 +302,6 @@ class UWorldIdsDialog(QDialog):
         btn_row.addWidget(self.progress)
         root.addLayout(btn_row)
 
-        # Saída
         self.outSummary = QTextEdit()
         self.outSummary.setReadOnly(True)
         self.outSummary.setFont(mono)
@@ -339,39 +316,56 @@ class UWorldIdsDialog(QDialog):
         )
         root.addWidget(self.outSummary)
 
-        # Persistência ao trocar versão
         self.cmbVersion.currentTextChanged.connect(self._persist_version_now)
+        self.cmbStep.currentTextChanged.connect(self._persist_version_now)
 
-        # Ações
         self.btnRun.clicked.connect(self.run_query)
         self.btnCopySyntax.clicked.connect(self.copy_syntax)
         self.btnOpenBrowser.clicked.connect(self.open_in_browser)
 
-        # Foco inicial no campo de IDs
         self.txtIds.setFocus()
 
         self._last_summary: Dict[str, Any] = {}
 
-    # ---------- persistência / leitura versão ----------
     def _persist_version_now(self):
         cfg = _get_config()
+
         label = self.cmbVersion.currentText()
         if label not in VERSION_LABELS:
             label = DEFAULT_VERSION_LABEL
         cfg["deck_version_label"] = label
+
+        step_label = self.cmbStep.currentText()
+        if step_label not in STEP_LABELS:
+            step_label = DEFAULT_STEP_LABEL
+        cfg["step_label"] = step_label
+
         _write_config(cfg)
 
     def _current_version_value(self) -> str:
         label = self.cmbVersion.currentText()
         if label not in VERSION_LABELS:
             label = DEFAULT_VERSION_LABEL
-        return VERSION_VALUE[label]
 
-    # ---------- feedback visual ----------
+        step_label = self.cmbStep.currentText()
+        if step_label not in STEP_LABELS:
+            step_label = DEFAULT_STEP_LABEL
+
+        try:
+            idx = STEP_LABELS.index(step_label) + 1
+        except ValueError:
+            idx = 1
+        step_num = str(idx)
+
+        if label == "V11":
+            return f"AK_Step{step_num}_v11"
+        else:
+            return f"AK_Step{step_num}_v12"
+
     def _set_busy(self, busy: bool):
         if busy:
             self.lblStatus.setText("Searching…")
-            self.progress.setRange(0, 0)  # indeterminate
+            self.progress.setRange(0, 0)
             self.progress.setVisible(True)
             self.btnRun.setEnabled(False)
             self.btnCopySyntax.setEnabled(False)
@@ -391,14 +385,11 @@ class UWorldIdsDialog(QDialog):
             self.lblStatus.repaint()
             QApplication.processEvents()
 
-    # ---------- execução (em background) ----------
     def run_query(self):
         deck_version_value = self._current_version_value()
         ids_questions = self.txtIds.toPlainText()
 
-        # persiste também ao rodar
         self._persist_version_now()
-
         self._set_busy(True)
 
         def work(_progress=None):
@@ -427,7 +418,6 @@ class UWorldIdsDialog(QDialog):
 
         mw.taskman.run_in_background(work, on_done)
 
-    # ---------- ações auxiliares ----------
     def copy_syntax(self):
         syntax = self._last_summary.get("ids_syntax") or ""
         if not syntax:
@@ -437,7 +427,6 @@ class UWorldIdsDialog(QDialog):
         tooltip("Search syntax copied to clipboard.", parent=self)
 
     def open_in_browser(self):
-        """Abre o Browser com a search syntax atual e fecha este diálogo ao concluir com sucesso."""
         syntax = self._last_summary.get("ids_syntax") or ""
         if not syntax:
             tooltip("No search syntax to open.", parent=self)
@@ -448,16 +437,15 @@ class UWorldIdsDialog(QDialog):
             showInfo(f"Could not open Browser:\n{e}")
             return
 
-        # Tenta API moderna; se falhar, usa fallback
         try:
-            brw.search_for(syntax)  # Anki recentes
+            brw.search_for(syntax)
         except Exception:
             try:
                 se = brw.form.searchEdit
                 try:
-                    se.setText(syntax)              # Qt6
+                    se.setText(syntax)
                 except Exception:
-                    se.lineEdit().setText(syntax)   # Qt5
+                    se.lineEdit().setText(syntax)
                 brw.onSearchActivated()
             except Exception as e:
                 showInfo(f"Could not run search in Browser:\n{e}")
@@ -473,7 +461,7 @@ class UWorldIdsDialog(QDialog):
         self.accept()
 
 # -----------------------------
-# Config Dialog (Add-ons → Configurar) — atalho global
+# Config Dialog
 # -----------------------------
 class ShortcutConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -570,6 +558,7 @@ def _apply_shortcut_from_config():
 
 def on_profile_open():
     global _menu_action
+
     try:
         mw.addonManager.setConfigAction(ADDON_ID, open_config_dialog)
     except Exception:
@@ -579,14 +568,214 @@ def on_profile_open():
             pass
 
     menu_root = getattr(mw.form, "menuTools", None)
-    if not menu_root:
-        showInfo("Tools menu not found.")
-        return
-
-    _menu_action = QAction("UWorld IDs → tags → cards", mw)
-    _menu_action.triggered.connect(open_dialog)
-    menu_root.addAction(_menu_action)
+    if menu_root:
+        _menu_action = QAction("UWorld IDs → tags → cards", mw)
+        _menu_action.triggered.connect(open_dialog)
+        menu_root.addAction(_menu_action)
 
     _apply_shortcut_from_config()
 
 gui_hooks.profile_did_open.append(on_profile_open)
+
+# -----------------------------
+# Top toolbar button (MANTIDO - área superior direita)
+# -----------------------------
+def on_top_toolbar_redraw(toolbar):
+    """
+    Adiciona um botão na área superior direita (ao lado dos outros add-ons).
+    """
+    toolbar.link_handlers["uworld_ids"] = open_dialog
+
+    js = r"""
+    (function() {
+        var btnId = 'uworld-ids-btn';
+        if (document.getElementById(btnId)) {
+            return;
+        }
+
+        var topRight = document.querySelector('.top-right') || 
+                       document.querySelector('.topbuts') ||
+                       document.querySelector('.tdright');
+        
+        if (!topRight) {
+            var allDivs = document.querySelectorAll('div');
+            for (var i = 0; i < allDivs.length; i++) {
+                if (allDivs[i].style.float === 'right' || 
+                    allDivs[i].align === 'right' ||
+                    allDivs[i].className.includes('right')) {
+                    topRight = allDivs[i];
+                    break;
+                }
+            }
+        }
+
+        if (!topRight) {
+            console.log('UWorld IDs: Could not find top-right container');
+            return;
+        }
+
+        var btn = document.createElement('button');
+        btn.id = btnId;
+        btn.textContent = 'UWIds→Cards';
+        btn.title = 'UWorld IDs → tags → cards';
+        btn.style.cssText = `
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: var(--fg);
+            padding: 4px 8px;
+            margin: 0 4px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.2s;
+        `;
+        
+        btn.onmouseover = function() {
+            this.style.background = 'rgba(255,255,255,0.1)';
+            this.style.borderColor = 'rgba(255,255,255,0.5)';
+        };
+        
+        btn.onmouseout = function() {
+            this.style.background = 'transparent';
+            this.style.borderColor = 'rgba(255,255,255,0.3)';
+        };
+        
+        btn.onclick = function(e) {
+            e.preventDefault();
+            pycmd('uworld_ids');
+            return false;
+        };
+
+        topRight.insertBefore(btn, topRight.firstChild);
+    })();
+    """
+    toolbar.web.eval(js)
+
+gui_hooks.top_toolbar_did_redraw.append(on_top_toolbar_redraw)
+
+# -----------------------------
+# Browser: adiciona botão E item no menu
+# -----------------------------
+def add_browser_menu(browser):
+    """Adiciona item 'UWorld IDs → tags → cards' no menu Edit do Browser."""
+    try:
+        if hasattr(browser.form, 'menuEdit'):
+            action = QAction("UWorld IDs → tags → cards", browser)
+            action.triggered.connect(lambda: open_dialog())
+            browser.form.menuEdit.addSeparator()
+            browser.form.menuEdit.addAction(action)
+            print("UWorld IDs: ✓ Item adicionado ao menu Edit do Browser!")
+    except Exception as e:
+        print(f"UWorld IDs: Erro ao adicionar ao menu Edit - {e}")
+
+def add_browser_toolbar_button(browser):
+    """Adiciona botão visual na área do Browser."""
+    # Evita duplicação
+    if getattr(browser, '_uworld_btn_added', False):
+        return
+    
+    try:
+        # Método 1: Tenta adicionar um botão na toolbar do browser
+        if hasattr(browser, 'form'):
+            # Procura por uma toolbar ou área de botões
+            toolbar = None
+            
+            # Tenta encontrar toolbar
+            if hasattr(browser.form, 'toolBar'):
+                toolbar = browser.form.toolBar
+            elif hasattr(browser.form, 'toolbar'):
+                toolbar = browser.form.toolbar
+            
+            if toolbar:
+                btn = QPushButton("📋 UWIds→Cards")
+                btn.setToolTip("Open UWorld IDs → tags → cards dialog")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: #667eea;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        padding: 6px 12px;
+                        font-size: 12px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background: #7c8ef5;
+                    }
+                """)
+                btn.clicked.connect(lambda: open_dialog())
+                toolbar.addWidget(btn)
+                browser._uworld_btn_added = True
+                print("UWorld IDs: ✓ Botão adicionado à toolbar do Browser!")
+                return
+        
+        # Método 2: Injeta HTML no webview do browser (se disponível)
+        if hasattr(browser, 'web') and browser.web:
+            js = """
+            (function() {
+                if (document.getElementById('uworld-browser-btn')) return;
+                
+                var style = document.createElement('style');
+                style.textContent = `
+                    #uworld-browser-btn-container {
+                        position: fixed;
+                        top: 10px;
+                        right: 10px;
+                        z-index: 9999;
+                    }
+                    #uworld-browser-btn {
+                        background: #667eea;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 8px 16px;
+                        font-size: 13px;
+                        font-weight: bold;
+                        cursor: pointer;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                    }
+                    #uworld-browser-btn:hover {
+                        background: #7c8ef5;
+                    }
+                `;
+                document.head.appendChild(style);
+                
+                var container = document.createElement('div');
+                container.id = 'uworld-browser-btn-container';
+                
+                var btn = document.createElement('button');
+                btn.id = 'uworld-browser-btn';
+                btn.textContent = '📋 UWIds→Cards';
+                btn.onclick = function() {
+                    pycmd('uworld_browser_open');
+                };
+                
+                container.appendChild(btn);
+                document.body.appendChild(container);
+            })();
+            """
+            browser.web.eval(js)
+            browser._uworld_btn_added = True
+            print("UWorld IDs: ✓ Botão HTML injetado no Browser!")
+            return
+            
+    except Exception as e:
+        print(f"UWorld IDs: Erro ao adicionar botão ao Browser - {e}")
+
+def handle_browser_pycmd(handled, message, context):
+    """Handler para comandos do botão HTML no Browser."""
+    if message == "uworld_browser_open":
+        open_dialog()
+        return True
+    return handled
+
+def on_browser_will_show(browser):
+    """Chamado quando o Browser vai ser exibido."""
+    from aqt.qt import QTimer
+    # Delay para garantir que a UI está montada
+    QTimer.singleShot(200, lambda: add_browser_toolbar_button(browser))
+
+gui_hooks.browser_menus_did_init.append(add_browser_menu)
+gui_hooks.browser_will_show.append(on_browser_will_show)
+gui_hooks.webview_did_receive_js_message.append(handle_browser_pycmd)
